@@ -7,8 +7,8 @@ import pytesseract
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 #wczytanie modeli
-door_model = YOLO("door_detect.pt")
-number_model = YOLO("number_detect.pt")
+door_model = YOLO("door_detect.pt") # link: https://hub.ultralytics.com/models/u53jjND2UndNgdnkjNnY
+number_model = YOLO("number_detect.pt") #link: https://hub.ultralytics.com/models/u53jjND2UndNgdnkjNnY
 
 # funkcje przygotywujace obraz do OCR
 
@@ -41,12 +41,12 @@ def apply_morphology(binary):
 def prepare_for_ocr_hsv(img):
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    _, _, v = cv2.split(hsv)  # używamy jasności
+    _, _, v = cv2.split(hsv)
 
     v_min = np.min(v)
     v_max = np.max(v)
 
-    if (v_max - v_min) > 10:       # zabezpieczenie przed division-by-zero
+    if (v_max - v_min) > 10:
         v_norm = (v - v_min) * (255.0 / (v_max - v_min))
         v_norm = v_norm.astype(np.uint8)
     else:
@@ -90,13 +90,13 @@ for i, box in enumerate(door_boxes):
         print(f"Drzwi {i}: brak numeru.")
         continue
 
-    # Pierwszy znaleziony numer (można rozszerzyć na wiele)
+    # Pierwszy znaleziony numer
     nx1, ny1, nx2, ny2 = map(int, number_boxes[0])
 
     # Wycięcie numeru
     number_roi = door_roi[ny1:ny2, nx1:nx2]
 
-    # Korekcja perspektywy + border replicate
+    # Korekcja perspektywy
     h, w = number_roi.shape[:2]
     src = np.float32([[0,0],[w,0],[0,h],[w,h]])
     dst = np.float32([[0,0], [200,0], [0,100], [200,100]])
@@ -111,10 +111,8 @@ for i, box in enumerate(door_boxes):
     text = pytesseract.image_to_string(th, lang="eng", config="--psm 6 -c tessedit_char_whitelist=0123456789")
     print(f"Drzwi {i}: odczytany numer: {text.strip()}")
     #Rysowanie na orginalnym obrazie
-    cv2.rectangle(img,
-                  (x1 + nx1, y1 + ny1),
-                  (x1 + nx2, y1 + ny2),
-                  (0, 0, 255), 3)
+    cv2.rectangle(img,(x1 + nx1, y1 + ny1),(x1 + nx2, y1 + ny2),(0, 0, 255), 3)
+
     #wyswietlenie obrazu numeru przygotowanego do OCR
     cv2.imshow("obraz do OCR", th)
     cv2.imshow("numer przed korekcja perspektywy", number_roi)
