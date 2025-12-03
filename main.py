@@ -3,130 +3,127 @@ import numpy as np
 from ultralytics import YOLO
 import pytesseract
 
-
-# --- Tesseract ---
+#ustawenie sciezki do OCR
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# --- MODELE YOLO ---
+#wczytanie modeli
 door_model = YOLO("door_detect.pt")
 number_model = YOLO("number_detect.pt")
 
-# --- WCZYTANIE OBRAZU ---
-image_path = "dataset/images/test/20251120_131840.jpg"
-img = cv2.imread(image_path)
+# funkcje przygotywujace obraz do OCR
+
+def apply_filters(img):
+
+    #Median Blur
+    #img = cv2.medianBlur(img, 3)
+
+    #Bilateral Filter
+    img = cv2.bilateralFilter(img, 9, 75, 75)
+
+    #Gaussian Blur
+    #img = cv2.GaussianBlur(img, (3, 3), 0)
+    return img
+
+
+def apply_morphology(binary):
+
+    kernel = np.ones((5, 5), np.uint8)
+
+    # Otwarcie (usuwa drobne białe piksele)
+    opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # Zamknięcie (ułatwia OCR przy przerwanych literach)
+    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    return closed
+
 
 def prepare_for_ocr_hsv(img):
+
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
+    _, _, v = cv2.split(hsv)  # używamy jasności
 
-    # używamy V jako bazę
-    base = v
+    v_min = np.min(v)
+    v_max = np.max(v)
 
-    # lekki blur
-    base = cv2.GaussianBlur(base, (3,3), 0)
+    if (v_max - v_min) > 10:       # zabezpieczenie przed division-by-zero
+        v_norm = (v - v_min) * (255.0 / (v_max - v_min))
+        v_norm = v_norm.astype(np.uint8)
+    else:
+        v_norm = v.copy()
 
-    # binaryzacja Otsu
-    _, th = cv2.threshold(base, 0, 255,
+    # Filtry
+    v_filtered = apply_filters(v_norm)
+
+    # Binaryzacja Otsu
+    _, th = cv2.threshold(v_filtered, 0, 255,
                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Morfologia: otwarcie + zamknięcie
+    th = apply_morphology(th)
 
     return th
 
 
-if img is None:
-    print("Błąd: nie można otworzyć zdjęcia.")
-    exit()
+#wczytanie obrazu
+image_path = "dataset/images/test/zd3.jpg"
+img = cv2.imread(image_path)
 
-# --------------------------------------------------------
-# 1️⃣ ROZCIĄGNIĘCIE HISTOGRAMU (Normalization)
-# --------------------------------------------------------
-# podnosi kontrast zdjęcia wejściowego
-img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
-
-# --------------------------------------------------------
-# 2️⃣ PEŁNA KONWERSJA BGR → HSV (przykład użycia)
-# --------------------------------------------------------
-img_hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-# można użyć HSV do filtracji, ale tutaj tylko demonstracja
-
-# --------------------------------------------------------
-# 3️⃣ DETEKCJA DRZWI
-# --------------------------------------------------------
+#detekcja drzwi
 door_results = door_model(img, conf=0.10)[0]
 door_boxes = door_results.boxes.xyxy.cpu().numpy()
 
-print(f"Znalezione drzwi: {len(door_boxes)}")
-
-# --- RYSOWANIE BBOX DRZWI ---
+#zaznaczenie drzwi
 for box in door_boxes:
     x1, y1, x2, y2 = map(int, box)
-    cv2.rectangle(img, (x1, y1), (x2, y2), (0,255,0), 2)
-    cv2.putText(img, "Drzwi", (x1, y1-10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+    cv2.rectangle(img, (x1, y1), (x2, y2), (0,255,0), 3)
 
-# --------------------------------------------------------
-# 4️⃣ DETEKCJA NUMERU NA DRZWIACH + OCR
-# --------------------------------------------------------
-
+#detekcja numeru na drzwiach
 for i, box in enumerate(door_boxes):
     x1, y1, x2, y2 = map(int, box)
-
-    # Wycięcie drzwi
     door_roi = img[y1:y2, x1:x2]
-    cv2.imwrite(f"door_{i}.jpg", door_roi)
 
-    # Detekcja numerów wewnątrz drzwi
     number_results = number_model(door_roi, conf=0.05)[0]
     number_boxes = number_results.boxes.xyxy.cpu().numpy()
 
     if len(number_boxes) == 0:
-        print(f"Drzwi {i}: nie znaleziono numeru.")
+        print(f"Drzwi {i}: brak numeru.")
         continue
 
-    # Bierzemy pierwszy numer
+    # Pierwszy znaleziony numer (można rozszerzyć na wiele)
     nx1, ny1, nx2, ny2 = map(int, number_boxes[0])
+
+    # Wycięcie numeru
     number_roi = door_roi[ny1:ny2, nx1:nx2]
-    cv2.imwrite(f"door_{i}_number.jpg", number_roi)
 
-    # --- RYSOWANIE BBOX NUMERU ---
-    cv2.rectangle(door_roi, (nx1, ny1), (nx2, ny2), (0,0,255), 2)
-    cv2.putText(door_roi, "Numer", (nx1, ny1-10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-
-    # --------------------------------------------------------
-    # 5️⃣ KOREKCJA PERSPEKTYWY NUMERU
-    # --------------------------------------------------------
-    # Upraszczamy: przyjmujemy prosty bounding box
+    # Korekcja perspektywy + border replicate
     h, w = number_roi.shape[:2]
+    src = np.float32([[0,0],[w,0],[0,h],[w,h]])
+    dst = np.float32([[0,0], [200,0], [0,100], [200,100]])
+    M = cv2.getPerspectiveTransform(src, dst)
 
-    src_points = np.float32([[0,0], [w,0], [0,h], [w,h]])
-    dst_points = np.float32([[0,0], [200,0], [0,100], [200,100]])
+    corrected = cv2.warpPerspective(number_roi, M, (200,100))
 
-    M = cv2.getPerspectiveTransform(src_points, dst_points)
-    corrected = cv2.warpPerspective(number_roi, M, (200, 100))
+    # Przygotowanie do OCR
+    th = prepare_for_ocr_hsv(corrected)
 
-    # --------------------------------------------------------
-    # 6️⃣ PRZYGOTOWANIE DO OCR
-    # --------------------------------------------------------
-    gray = cv2.cvtColor(corrected, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3,3), 0)
-    _, th = cv2.threshold(gray, 0, 255,
-                          cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    #th = prepare_for_ocr_hsv(corrected)
-    # --------------------------------------------------------
-    # 7️⃣ OCR
-    # --------------------------------------------------------
-    text = pytesseract.image_to_string(
-        th, lang="eng+pol", config="--psm 6"
-    ).strip()
+    # OCR
+    text = pytesseract.image_to_string(th, lang="eng", config="--psm 6 -c tessedit_char_whitelist=0123456789")
+    print(f"Drzwi {i}: odczytany numer: {text.strip()}")
+    #Rysowanie na orginalnym obrazie
+    cv2.rectangle(img,
+                  (x1 + nx1, y1 + ny1),
+                  (x1 + nx2, y1 + ny2),
+                  (0, 0, 255), 3)
+    #wyswietlenie obrazu numeru przygotowanego do OCR
+    cv2.imshow("obraz do OCR", th)
+    cv2.imshow("numer przed korekcja perspektywy", number_roi)
+    cv2.imshow("numeru po korekcji perspektywy", corrected)
 
-    print(f"Drzwi {i} – odczytany numer: {text}")
-    cv2.imwrite(f"door_{i}_number_for_ocr.jpg", th)
+# Wyświetlenie
+img = cv2.resize(img, (620, 480))
+cv2.imshow("Detekcja", img)
 
-# --------------------------------------------------------
-# 8️⃣ POKAZANIE OBRAZU Z BBOXAMI
-# --------------------------------------------------------
-cv2.imshow("Wynik detekcji", corrected)
-cv2.imshow("Wynik detekcji 2", number_roi)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
